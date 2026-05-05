@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/seakee/cpa-manager/usage-service/internal/collector"
@@ -16,16 +14,21 @@ import (
 )
 
 func main() {
+	if err := runPlatform(); err != nil {
+		log.Fatalf("cpa-manager: %v", err)
+	}
+}
+
+func run(ctx context.Context) error {
 	cfg := config.Load()
 	db, err := store.Open(cfg.DBPath)
 	if err != nil {
-		log.Fatalf("open sqlite: %v", err)
+		return fmt.Errorf("open sqlite: %w", err)
 	}
 	defer db.Close()
 
 	manager := collector.NewManager(cfg, db)
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	defer manager.Stop()
 
 	if cfg.CPAUpstreamURL != "" && cfg.ManagementKey != "" {
 		manager.Start(ctx, collector.RuntimeConfig{
@@ -51,18 +54,33 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("cpa-manager listening on %s", cfg.HTTPAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server: %v", err)
+			serverErr <- err
+			return
 		}
+		serverErr <- nil
 	}()
 
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case err := <-serverErr:
+		if err != nil {
+			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
+	}
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	manager.Stop()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown: %v", err)
+		return fmt.Errorf("shutdown: %w", err)
 	}
+	if err := <-serverErr; err != nil {
+		return fmt.Errorf("http server: %w", err)
+	}
+	return nil
 }

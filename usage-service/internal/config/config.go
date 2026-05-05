@@ -25,7 +25,7 @@ type Config struct {
 }
 
 func Load() Config {
-	dataDir := env("USAGE_DATA_DIR", "/data")
+	dataDir := env("USAGE_DATA_DIR", defaultDataDir())
 	return Config{
 		HTTPAddr:       env("HTTP_ADDR", "0.0.0.0:18317"),
 		DBPath:         env("USAGE_DB_PATH", filepath.Join(dataDir, "usage.sqlite")),
